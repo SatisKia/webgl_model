@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title></title>
+<script type="text/javascript" src="d2js.js"></script>
+<script type="text/javascript" src="d2js_gl.js"></script>
+<script type="text/javascript" src="model.js"></script>
+<script type="text/javascript">
+
+window.onload = d2js_onload;
+window.onorientationchange = d2js_onorientationchange;
+window.onresize = d2js_onresize;
+
+// _GLUtility
+var glu;
+
+// シェーダー
+var shader;
+var modelViewMatrix;
+
+var model = new Array(modelSrc.length);
+var modelIndex = 0;
+
+var cameraX = 0.0;
+var cameraY = 0.0;
+var cameraZ = 5.0;
+var lookX = 0.0;
+var lookY = cameraY;
+var lookZ = 0.0;
+var lightX = -3.0;
+var lightY = 7.5;
+var lightZ = 3.5;
+var transLightX;
+var transLightY;
+var transLightZ;
+
+var mouseDown = false;
+var mouseX;
+var mouseY;
+var rotateX = 20.0;
+var rotateY = 20.0;
+
+function mySetLightPos(gl) {
+  // モデルの回転に合わせて光源位置を変換
+  glu.setIdentity();
+  glu.translate(0.0, lookY, 0.0);
+  glu.rotate(rotateX, 1, 0, 0);
+  glu.rotate(rotateY, 0, 1, 0);
+  glu.translate(0.0, -lookY, 0.0);
+  glu.transVector(lightX, lightY, lightZ);
+  transLightX = glu.transX();
+  transLightY = glu.transY();
+  transLightZ = glu.transZ();
+  gl.uniform3fv(shader.vars.uDirectionalLightPosition, [transLightX, transLightY, transLightZ]);
+}
+
+function frameTime() {
+  return 1000 / 30/*フレーム*/;
+}
+
+function init() {
+  window._USE_KEY = true;
+  window._USE_MOUSE = true;
+}
+
+function start() {
+  setCurrent("fuga_canvas");
+  return true;
+}
+
+function paint(g) {
+  setCurrent3D("hoge_canvas", "fuga_canvas");
+}
+
+function init3D(gl, _glu) {
+  glu = _glu;
+
+  var fieldOfView = (45 * Math.PI) / 180; // 視野角（ラジアン）
+  var aspect = getWidth() / getHeight(); // 幅と高さの比率はキャンバスの表示サイズに合わせる
+  var zNear = 0.1; // 表示するオブジェクトの範囲（手前）
+  var zFar = 100.0; // 表示するオブジェクトの範囲（奥）
+  var t = Math.tan(fieldOfView / 2) * zNear;
+  var b = -t;
+  var r = t * aspect;
+  var l = -r;
+  glu.setIdentity();
+  glu.frustum(l, r, b, t, zNear, zFar);
+  var projectionMatrix = glu.glMatrix();
+
+  glu.lookAt(cameraX, cameraY, cameraZ, lookX, lookY, lookZ, 0.0, 1.0, 0.0);
+  modelViewMatrix = glu.glMatrix();
+
+  const vsSource = `
+    attribute vec3 aVertexPosition;
+    attribute vec3 aVertexNormal;
+    attribute vec4 aVertexColor;
+
+    uniform mat4 uProjectionMatrix;
+    uniform mat4 uModelViewMatrix;
+    uniform mat4 uNormalMatrix;
+
+    varying highp vec3 vNormal;
+    varying lowp vec4 vColor;
+
+    void main(void) {
+      gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+
+      vNormal = vec3(uNormalMatrix * vec4(aVertexNormal, 1.0));
+
+      vColor = aVertexColor;
+    }
+  `;
+  const fsSource = `
+    precision mediump float;
+
+    uniform vec3 uDirectionalLightColor;
+    uniform vec3 uDirectionalLightPosition;
+
+    uniform vec3 uAmbientLightColor;
+
+    varying highp vec3 vNormal;
+    varying lowp vec4 vColor;
+
+    void main(void) {
+      highp vec3 normal = normalize(vNormal);
+      highp vec3 directionalLightPosition = normalize(uDirectionalLightPosition);
+      highp float cosAngle = clamp(dot(normal, directionalLightPosition), 0.0, 1.0); // ベクトルの内積
+      highp vec3 diffuse = uDirectionalLightColor * cosAngle;
+
+      lowp vec3 ambient = uAmbientLightColor;
+
+      gl_FragColor = vec4(vColor.rgb * (diffuse + ambient), vColor.a);
+    }
+  `;
+  shader = new _GLShader(vsSource, fsSource, true);
+  shader.use();
+
+  for (var i = 0; i < modelSrc.length; i++) {
+    model[i] = createGLModel(modelSrc[i], 0.01, -1, true, false);
+  }
+
+  gl.uniformMatrix4fv(shader.vars.uProjectionMatrix, false, projectionMatrix);
+
+  gl.uniform3fv(shader.vars.uDirectionalLightColor, [0.5, 0.5, 0.5]);
+
+  gl.uniform3fv(shader.vars.uAmbientLightColor, [0.6, 0.6, 0.6]);
+
+  return true;
+}
+
+function glShaderError(type, info) {
+  console.log(info);
+}
+
+function init2D(g) {
+}
+
+function clear2D(g) {
+  g.setColor(g.getColorOfRGBA(0, 0, 0, 0));
+  g.fillRect(0, 0, getWidth(), getHeight());
+}
+
+function paint3D(gl, glu) {
+  var key = getKeypadState();
+  if ((key & keyBit(window._KEY_UP   )) != 0) { lightY += 0.1; }
+  if ((key & keyBit(window._KEY_DOWN )) != 0) { lightY -= 0.1; }
+  if ((key & keyBit(window._KEY_LEFT )) != 0) { lightX -= 0.1; }
+  if ((key & keyBit(window._KEY_RIGHT)) != 0) { lightX += 0.1; }
+  if ((key & keyBit(window._KEY_Z    )) != 0) { lightZ += 0.1; }
+  if ((key & keyBit(window._KEY_X    )) != 0) { lightZ -= 0.1; }
+  mySetLightPos(gl);
+
+  gl.clearColor(0.0, 0.0, 1.0, 1.0);
+  gl.clearDepth(1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  gl.enable(gl.CULL_FACE); // 裏面を表示しない
+
+  gl.enable(gl.DEPTH_TEST); // 深度テストを有効化
+  gl.depthFunc(gl.LEQUAL); // 奥にあるものは隠れるようにする
+  gl.depthMask(true);
+
+  var gld = new _GLDraw(null);
+  gld.add(model[modelIndex], -1, -1, modelViewMatrix, -1);
+  gld.draw(null);
+}
+
+function paint2D(g) {
+  g.setFont(24, "ＭＳ ゴシック");
+  g.setColor(g.getColorOfRGB(255, 0, 255));
+  g.drawString("model " + (modelIndex + 1) + " / " + model.length, 0, 24);
+  g.drawString("rotateX " + rotateX, 0, 48);
+  g.drawString("rotateY " + rotateY, 0, 72);
+  g.drawString("lightX " + lightX, 0, 96);
+  g.drawString("lightY " + lightY, 0, 120);
+  g.drawString("lightZ " + lightZ, 0, 144);
+}
+
+// _GLModel用
+function glModelActiveTexture(gl, id) {
+  return gl.TEXTURE0;
+}
+function glModelBindPositionBuffer(gl) {
+  _GLShader.bindPositionBuffer(shader.vars.aVertexPosition);
+}
+function glModelBindNormalBuffer(gl) {
+  _GLShader.bindNormalBuffer(shader.vars.aVertexNormal);
+}
+function glModelBindColorBuffer(gl) {
+  _GLShader.bindColorBuffer(shader.vars.aVertexColor);
+}
+function glModelBindTextureCoordBuffer(gl) {
+}
+function glModelSetTexture(gl, glt/*_GLTexture*/, index, tex_index) {
+  return false;
+}
+function glModelBeginDraw(gl, glt/*_GLTexture*/, index, tex_index) {
+  return true;
+}
+function glModelEndDraw(gl, glt/*_GLTexture*/, index, tex_index) {
+}
+
+// _GLDraw用
+function glDrawUseProgram(gl, p, index) {
+}
+function glDrawSetProjectionMatrix(gl, mat, p, index) {
+}
+function glDrawSetModelViewMatrix(gl, mat) {
+  glu.push();
+  glu.set(glu.utMatrix(mat));
+  glu.rotate(rotateX, 1, 0, 0);
+  glu.rotate(rotateY, 0, 1, 0);
+  gl.uniformMatrix4fv(shader.vars.uModelViewMatrix, false, glu.glMatrix());
+  glu.invert(); // 逆行列
+  glu.transpose(); // 行列の転置
+  gl.uniformMatrix4fv(shader.vars.uNormalMatrix, false, glu.glMatrix());
+  glu.pop();
+}
+
+function processEvent(type, param) {
+  switch (type) {
+  case window._KEY_PRESSED_EVENT:
+    if (param == window._KEY_C) {
+      var tmp = modelIndex - 1;
+      if (tmp < 0) {
+        tmp = model.length - 1;
+      }
+      modelIndex = tmp;
+    }
+    if (param == window._KEY_V) {
+      var tmp = modelIndex + 1;
+      if (tmp >= model.length) {
+        tmp = 0;
+      }
+      modelIndex = tmp;
+    }
+    break;
+  case window._MOUSE_DOWN_EVENT:
+    mouseDown = true;
+    mouseX = getMouseX();
+    mouseY = getMouseY();
+    break;
+  case window._MOUSE_UP_EVENT:
+    mouseDown = false;
+    break;
+  case window._MOUSE_MOVE_EVENT:
+    if (mouseDown) {
+      var newMouseX = getMouseX();
+      var newMouseY = getMouseY();
+      rotateX += (newMouseY - mouseY) / 2.0;
+      rotateY += (newMouseX - mouseX) / 2.0;
+      mouseX = newMouseX;
+      mouseY = newMouseY;
+    }
+    break;
+  }
+}
+
+function error() {
+}
+
+</script>
+</head>
+<body>
+<div align="center">
+  <div style="position:relative">
+    <canvas id="hoge_canvas" style="position:absolute; left:50%; transform:translate(-50%, 0)" width="640" height="480"></canvas>
+    <canvas id="fuga_canvas" style="position:absolute; left:50%; transform:translate(-50%, 0)" width="640" height="480"></canvas>
+  </div>
+</div>
+</body>
+</html>
