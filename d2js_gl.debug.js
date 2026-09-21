@@ -23,7 +23,13 @@ _GLDrawPrimitive.prototype = {
 		switch( this._p.type() ){
 		case 0:
 			this._p.setTransparency( this._trans );
-			this._p.draw( glt, this._index, this._tex_index, alpha );
+			if( this._index < 0 ){
+				for( var i = 0; i < this._p.stripNum(); i++ ){
+					this._p.draw( glt, i, this._tex_index, alpha );
+				}
+			} else {
+				this._p.draw( glt, this._index, this._tex_index, alpha );
+			}
 			break;
 		case 1:
 			this._p.setTransparency( this._trans );
@@ -47,13 +53,7 @@ _GLDraw.prototype = {
 		this._draw.length = 0;
 	},
 	add : function( p, index, tex_index, mat , trans ){
-		if( (p.type() == 0) && (index < 0) ){
-			for( var i = p.stripNum() - 1; i >= 0; i-- ){
-				this._draw[this._draw.length] = new _GLDrawPrimitive( p, i, tex_index, mat, trans, false );
-			}
-		} else {
 			this._draw[this._draw.length] = new _GLDrawPrimitive( p, index, tex_index, mat, trans, false );
-		}
 	},
 	addSprite : function( p, tex_index, x, y, z, trans ){
 		var index = this._draw.length;
@@ -903,6 +903,16 @@ function createGLModel( _data, scale, id, depth, lighting, strip_type ){
 	model.setStripTranslate( strip_tx, strip_ty, strip_tz );
 	model.setStripRotate( strip_or, strip_ox, strip_oy, strip_oz );
 	return model;
+}
+function disposeGLModel( model ){
+	if( model == null ){
+		return;
+	}
+	_gl.deleteBuffer( model._position_buffer );
+	_gl.deleteBuffer( model._normal_buffer );
+	_gl.deleteBuffer( model._color_buffer );
+	_gl.deleteBuffer( model._texture_coord_buffer );
+	_gl.deleteBuffer( model._strip_buffer );
 }
 function _GLPrimitive(){
 	this._type = 0;
@@ -2577,6 +2587,7 @@ window.createShaderProgram = createShaderProgram;
 window._GLModel = _GLModel;
 window._GLModelData = _GLModelData;
 window.createGLModel = createGLModel;
+window.disposeGLModel = disposeGLModel;
 window._GLPrimitive = _GLPrimitive;
 window._GLShader = _GLShader;
 window._GLSprite = _GLSprite;
