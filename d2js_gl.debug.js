@@ -4,93 +4,132 @@
  */
 (function( window, undefined ){
 var document = window.document;
-function _GLDrawPrimitive( p, index, tex_index, mat , trans, sort, x, y, z ){
-	this._p = p;
-	this._index = index;
-	this._tex_index = tex_index;
-	this._mat = mat;
-	this._trans = (trans >= 0.0) ? trans : p.transparency();
-	this._distance = 0.0;
+window._USE_GPUALPHA = false;
+var _gldraw_alpha = 1.0;
+function getGLDrawAlpha(){
+	return _gldraw_alpha;
+};
+var _gldraw_primitive_pool = [];
+function _resetGLDrawPrimitive( prim, p, index, tex_index, mat , trans, sort, x, y, z ){
+	prim._p = p;
+	prim._index = index;
+	prim._tex_index = tex_index;
+	prim._mat = mat;
+	prim._trans = (trans >= 0.0) ? trans : p.transparency();
+	prim._distance = 0.0;
 	if( sort ){
 		var dx = x - _glu.positionX();
 		var dy = y - _glu.positionY();
 		var dz = z - _glu.positionZ();
-		this._distance = _glu.distance( dx, dy, dz );
+		prim._distance = _glu.distance( dx, dy, dz );
 	}
 }
-_GLDrawPrimitive.prototype = {
-	draw : function( glt , alpha ){
-		switch( this._p.type() ){
-		case 0:
-			this._p.setTransparency( this._trans );
-			if( this._index < 0 ){
-				for( var i = 0; i < this._p.stripNum(); i++ ){
-					this._p.draw( glt, i, this._tex_index, alpha );
-				}
-			} else {
-				this._p.draw( glt, this._index, this._tex_index, alpha );
-			}
-			break;
-		case 1:
-			this._p.setTransparency( this._trans );
-			this._p.draw( glt, this._tex_index, alpha );
-			break;
-		}
+function _acquireGLDrawPrimitive( p, index, tex_index, mat , trans, sort, x, y, z ){
+	var prim = _gldraw_primitive_pool.pop();
+	if( prim ){
+		_resetGLDrawPrimitive( prim, p, index, tex_index, mat, trans, sort, x, y, z );
+		return prim;
 	}
+	prim = {};
+	_resetGLDrawPrimitive( prim, p, index, tex_index, mat, trans, sort, x, y, z );
+	prim.draw = _drawGLDrawPrimitive;
+	return prim;
+}
+function _releaseGLDrawPrimitive( prim ){
+	_gldraw_primitive_pool.push( prim );
+}
+function _drawGLDrawPrimitive( glt , alpha ){
+	_gldraw_alpha = this._trans;
+	if( !_USE_GPUALPHA ){
+		this._p.setTransparency( this._trans );
+	}
+	switch( this._p.type() ){
+	case 0:
+		if( this._index < 0 ){
+			for( var i = 0; i < this._p.stripNum(); i++ ){
+				this._p.draw( glt, i, this._tex_index, alpha );
+			}
+		} else {
+			this._p.draw( glt, this._index, this._tex_index, alpha );
+		}
+		break;
+	case 1:
+		this._p.draw( glt, this._tex_index, alpha );
+		break;
+	}
+}
+function _GLDrawPrimitive( p, index, tex_index, mat , trans, sort, x, y, z ){
+	return _acquireGLDrawPrimitive( p, index, tex_index, mat, trans, sort, x, y, z );
+}
+_GLDrawPrimitive.prototype = {
+	draw : _drawGLDrawPrimitive
 };
-function _GLDraw( proj_mat , sprite_view_flag ){
+function _GLDraw( proj_mat , sprite_view_flag, slot_num ){
 	this._proj_mat = proj_mat;
 	this._sprite_view_flag = (sprite_view_flag == undefined) ? true : sprite_view_flag;
-	this._draw = new Array();
+	this._slot_num = (slot_num == undefined) ? 1 : slot_num;
+	this._draw = new Array(this._slot_num);
+	for( var i = 0; i < this._slot_num; i++ ){
+		this._draw[i] = new Array();
+	}
+	this._slot = 0;
+	this._added = false;
 }
 _GLDraw.prototype = {
 	clear : function(){
-		for( var i = this._draw.length - 1; i >= 0; i-- ){
-			if( this._draw[i] != null ){
-				this._draw[i] = null;
-			}
-		}
-		this._draw.length = 0;
-	},
-	add : function( p, index, tex_index, mat , trans ){
-			this._draw[this._draw.length] = new _GLDrawPrimitive( p, index, tex_index, mat, trans, false );
-	},
-	addSprite : function( p, tex_index, x, y, z, trans ){
-		var index = this._draw.length;
-		this._draw[index] = new _GLDrawPrimitive( p, -1, tex_index, _glu.spriteMatrix( x, y, z, this._sprite_view_flag ), trans, true, x, y, z );
-		return this._draw[index]._distance;
-	},
-	addSpriteScale : function( p, tex_index, x, y, z, scale_x, scale_y, scale_z, trans ){
-		var index = this._draw.length;
-		_glu.spriteMatrix( x, y, z, this._sprite_view_flag );
-		_glu.scale( scale_x, scale_y, scale_z );
-		this._draw[index] = new _GLDrawPrimitive( p, -1, tex_index, _glu.glMatrix(), trans, true, x, y, z );
-		return this._draw[index]._distance;
-	},
-	draw : function( glt ){
 		var i, j;
-		var distance;
-		var tmp;
-		var count = this._draw.length;
-		var draw = new Array();
-		var k = 0;
-		for( i = 0; i < count; i++ ){
-			if( this._draw[i]._distance == 0.0 ){
-				this._draw[i]._distance = -1.0;
-				draw[k++] = this._draw[i];
-			}
-		}
-		for( ; k < count; k++ ){
-			distance = 0.0;
-			j = 0;
-			for( i = 0; i < count; i++ ){
-				if( this._draw[i]._distance >= distance ){
-					distance = this._draw[i]._distance;
-					j = i;
+		for( j = 0; j < this._slot_num; j++ ){
+			for( i = this._draw[j].length - 1; i >= 0; i-- ){
+				if( this._draw[j][i] != null ){
+					_releaseGLDrawPrimitive( this._draw[j][i] );
+					this._draw[j][i] = null;
 				}
 			}
-			this._draw[j]._distance = -1.0;
-			draw[k] = this._draw[j];
+			this._draw[j].length = 0;
+		}
+		this._added = false;
+	},
+	setSlot : function( slot ){
+		this._slot = slot;
+	},
+	isAdded : function(){
+		return this._added;
+	},
+	add : function( p, index, tex_index, mat , trans ){
+			this._draw[this._slot][this._draw[this._slot].length] = new _GLDrawPrimitive( p, index, tex_index, mat, trans, false );
+	},
+	addSprite : function( p, tex_index, x, y, z, trans ){
+		var index = this._draw[this._slot].length;
+		this._draw[this._slot][index] = new _GLDrawPrimitive( p, -1, tex_index, _glu.spriteMatrix( x, y, z, this._sprite_view_flag ), trans, true, x, y, z );
+		return this._draw[this._slot][index]._distance;
+	},
+	addSpriteScale : function( p, tex_index, x, y, z, scale_x, scale_y, scale_z, trans ){
+		var index = this._draw[this._slot].length;
+		_glu.spriteMatrix( x, y, z, this._sprite_view_flag );
+		_glu.scale( scale_x, scale_y, scale_z );
+		this._draw[this._slot][index] = new _GLDrawPrimitive( p, -1, tex_index, _glu.glMatrix(), trans, true, x, y, z );
+		return this._draw[this._slot][index]._distance;
+	},
+	draw : function( glt ){
+		var i;
+		var tmp;
+		var draw = this._draw[this._slot];
+		var count = draw.length;
+		if( count > 1 ){
+			draw.sort( function( a, b ){
+				var ad = a._distance;
+				var bd = b._distance;
+				if( ad == 0.0 && bd == 0.0 ){
+					return 0;
+				}
+				if( ad == 0.0 ){
+					return -1;
+				}
+				if( bd == 0.0 ){
+					return 1;
+				}
+				return bd - ad;
+			} );
 		}
 		for( i = 0; i < count; i++ ){
 			tmp = draw[i];
@@ -106,10 +145,7 @@ _GLDraw.prototype = {
 			glDrawSetModelViewMatrix( _gl, tmp._mat, tmp._p, tmp._index );
 			tmp.draw( glt, true );
 		}
-		for( i = 0; i < count; i++ ){
-			draw[i] = null;
-		}
-		draw = null;
+		this._added = true;
 	}
 };
 function canUseWebGL(){
@@ -278,6 +314,11 @@ function _GLModel( id, depth, lighting ){
 	this._color_buffer = _gl.createBuffer();
 	this._texture_coord_buffer = _gl.createBuffer();
 	this._strip_buffer = _gl.createBuffer();
+	this._strip_gpu = null;
+	this._tmp_diffuse = new Array( 4 );
+	this._tmp_ambient = new Array( 4 );
+	this._tmp_emission = new Array( 4 );
+	this._tmp_specular = new Array( 4 );
 }
 _GLModel.prototype = {
 	type : function(){
@@ -424,7 +465,9 @@ _GLModel.prototype = {
 		}
 		if( tex_index >= 0 ){
 			glt.use( tex_index );
-			glt.setTransparency( tex_index, this.transparency() );
+			if( !_USE_GPUALPHA ){
+				glt.setTransparency( tex_index, this.transparency() );
+			}
 			alpha = glt.alpha( tex_index );
 			if( depth ){
 				depth = glt.depth( tex_index );
@@ -434,43 +477,60 @@ _GLModel.prototype = {
 	},
 	draw : function( glt , index, tex_index, alpha ){
 		var alpha2 = this.textureAlpha( glt, index, tex_index );
-		if( this.transparency() != 1.0 ){
+		var trans = _USE_GPUALPHA ? getGLDrawAlpha() : this.transparency();
+		if( trans < 1.0 ){
 			alpha2 = true;
 		}
 		if( alpha2 != alpha ){
 			return;
 		}
-		if( this._strip_coord[index] >= 0 ){
-			_gl.bindBuffer( _gl.ARRAY_BUFFER, this._position_buffer );
-			_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._coord[this._strip_coord[index]] ), _gl.STATIC_DRAW );
-			glModelBindPositionBuffer( _gl, this._id, this._lighting );
-			_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
-		}
-		if( (this._normal != null) && (this._strip_normal[index] >= 0) ){
-			_gl.bindBuffer( _gl.ARRAY_BUFFER, this._normal_buffer );
-			_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._normal[this._strip_normal[index]] ), _gl.STATIC_DRAW );
-			glModelBindNormalBuffer( _gl, this._id, this._lighting );
-			_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
-		}
-		if( (this._color != null) && (this._strip_color[index] >= 0) ){
-			var color;
-			var trans = this.transparency();
-			if( trans != 1.0 ){
-				var tmp = this._color[this._strip_color[index]];
-				color = new Array( tmp.length );
-				for( var i = 0; i < tmp.length; i += 4 ){
-					color[i ] = tmp[i ];
-					color[i + 1] = tmp[i + 1];
-					color[i + 2] = tmp[i + 2];
-					color[i + 3] = tmp[i + 3] * trans;
-				}
-			} else {
-				color = this._color[this._strip_color[index]];
+		var gpu = this._strip_gpu ? this._strip_gpu[index] : null;
+		if( gpu ){
+			if( gpu.position_buffer ){
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, gpu.position_buffer );
+				glModelBindPositionBuffer( _gl, this._id, this._lighting );
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
 			}
-			_gl.bindBuffer( _gl.ARRAY_BUFFER, this._color_buffer );
-			_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( color ), _gl.STATIC_DRAW );
-			glModelBindColorBuffer( _gl, this._id, this._lighting );
-			_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+			if( gpu.normal_buffer ){
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, gpu.normal_buffer );
+				glModelBindNormalBuffer( _gl, this._id, this._lighting );
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+			}
+			if( gpu.color_buffer ){
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, gpu.color_buffer );
+				glModelBindColorBuffer( _gl, this._id, this._lighting );
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+			}
+		} else {
+			if( this._strip_coord[index] >= 0 ){
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, this._position_buffer );
+				_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._coord[this._strip_coord[index]] ), _gl.STATIC_DRAW );
+				glModelBindPositionBuffer( _gl, this._id, this._lighting );
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+			}
+			if( (this._normal != null) && (this._strip_normal[index] >= 0) ){
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, this._normal_buffer );
+				_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._normal[this._strip_normal[index]] ), _gl.STATIC_DRAW );
+				glModelBindNormalBuffer( _gl, this._id, this._lighting );
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+			}
+			if( (this._color != null) && (this._strip_color[index] >= 0) ){
+				var color = this._color[this._strip_color[index]];
+				if( !_USE_GPUALPHA && (trans != 1.0) ){
+					var tmp = color;
+					color = new Array( tmp.length );
+					for( var i = 0; i < tmp.length; i += 4 ){
+						color[i ] = tmp[i ];
+						color[i + 1] = tmp[i + 1];
+						color[i + 2] = tmp[i + 2];
+						color[i + 3] = tmp[i + 3] * trans;
+					}
+				}
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, this._color_buffer );
+				_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( color ), _gl.STATIC_DRAW );
+				glModelBindColorBuffer( _gl, this._id, this._lighting );
+				_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+			}
 		}
 		if( tex_index < 0 ){
 			tex_index = this.textureIndex( index );
@@ -479,8 +539,12 @@ _GLModel.prototype = {
 			if( (this._map != null) && (this._strip_map[index] >= 0) && (tex_index >= 0) ){
 				_gl.activeTexture( glModelActiveTexture( _gl, this._id ) );
 				glt.bindTexture( _gl.TEXTURE_2D, glt.id( tex_index ) );
-				_gl.bindBuffer( _gl.ARRAY_BUFFER, this._texture_coord_buffer );
-				_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._map[this._strip_map[index]] ), _gl.STATIC_DRAW );
+				if( gpu && gpu.texture_coord_buffer ){
+					_gl.bindBuffer( _gl.ARRAY_BUFFER, gpu.texture_coord_buffer );
+				} else {
+					_gl.bindBuffer( _gl.ARRAY_BUFFER, this._texture_coord_buffer );
+					_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._map[this._strip_map[index]] ), _gl.STATIC_DRAW );
+				}
 				glModelBindTextureCoordBuffer( _gl, this._id, this._lighting );
 				_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
 			}
@@ -491,28 +555,28 @@ _GLModel.prototype = {
 		var material_specular = null;
 		var material_shininess = null;
 		if( (this._material_diffuse != null) && (this._strip_material[index] >= 0) ){
-			material_diffuse = new Array( 4 );
+			material_diffuse = this._tmp_diffuse;
 			material_diffuse[0] = this._material_diffuse[this._strip_material[index] * 4 ];
 			material_diffuse[1] = this._material_diffuse[this._strip_material[index] * 4 + 1];
 			material_diffuse[2] = this._material_diffuse[this._strip_material[index] * 4 + 2];
 			material_diffuse[3] = this._material_diffuse[this._strip_material[index] * 4 + 3];
 		}
 		if( (this._material_ambient != null) && (this._strip_material[index] >= 0) ){
-			material_ambient = new Array( 4 );
+			material_ambient = this._tmp_ambient;
 			material_ambient[0] = this._material_ambient[this._strip_material[index] * 4 ];
 			material_ambient[1] = this._material_ambient[this._strip_material[index] * 4 + 1];
 			material_ambient[2] = this._material_ambient[this._strip_material[index] * 4 + 2];
 			material_ambient[3] = this._material_ambient[this._strip_material[index] * 4 + 3];
 		}
 		if( (this._material_emission != null) && (this._strip_material[index] >= 0) ){
-			material_emission = new Array( 4 );
+			material_emission = this._tmp_emission;
 			material_emission[0] = this._material_emission[this._strip_material[index] * 4 ];
 			material_emission[1] = this._material_emission[this._strip_material[index] * 4 + 1];
 			material_emission[2] = this._material_emission[this._strip_material[index] * 4 + 2];
 			material_emission[3] = this._material_emission[this._strip_material[index] * 4 + 3];
 		}
 		if( (this._material_specular != null) && (this._strip_material[index] >= 0) ){
-			material_specular = new Array( 4 );
+			material_specular = this._tmp_specular;
 			material_specular[0] = this._material_specular[this._strip_material[index] * 4 ];
 			material_specular[1] = this._material_specular[this._strip_material[index] * 4 + 1];
 			material_specular[2] = this._material_specular[this._strip_material[index] * 4 + 2];
@@ -527,9 +591,13 @@ _GLModel.prototype = {
 			_gl.depthMask( false );
 		}
 		if( glModelBeginDraw( _gl, glt, index, tex_index, this._id, this._lighting, material_diffuse, material_ambient, material_emission, material_specular, material_shininess ) ){
-			_gl.bindBuffer( _gl.ELEMENT_ARRAY_BUFFER, this._strip_buffer );
-			_gl.bufferData( _gl.ELEMENT_ARRAY_BUFFER, new Uint16Array( this._strip[index] ), _gl.STATIC_DRAW );
-			var count = _gl.getBufferParameter( _gl.ELEMENT_ARRAY_BUFFER, _gl.BUFFER_SIZE ) / 2 ;
+			if( gpu && gpu.index_buffer ){
+				_gl.bindBuffer( _gl.ELEMENT_ARRAY_BUFFER, gpu.index_buffer );
+			} else {
+				_gl.bindBuffer( _gl.ELEMENT_ARRAY_BUFFER, this._strip_buffer );
+				_gl.bufferData( _gl.ELEMENT_ARRAY_BUFFER, new Uint16Array( this._strip[index] ), _gl.STATIC_DRAW );
+			}
+			var count = gpu ? gpu.index_count : (_gl.getBufferParameter( _gl.ELEMENT_ARRAY_BUFFER, _gl.BUFFER_SIZE ) / 2 );
 			if( this._strip_type == 0 ){
 				_gl.drawElements( _gl.LINE_STRIP, count, _gl.UNSIGNED_SHORT, 0 );
 			} else if( this._strip_type == 1 ){
@@ -904,9 +972,68 @@ function createGLModel( _data, scale, id, depth, lighting, strip_type ){
 	model.setStripRotate( strip_or, strip_ox, strip_oy, strip_oz );
 	return model;
 }
-function disposeGLModel( model ){
+function uploadGLModelBuffers( model ){
+	var j, ci, ni, coli, mi;
 	if( model == null ){
 		return;
+	}
+	model._strip_gpu = new Array( model._strip_num );
+	for( j = 0; j < model._strip_num; j++ ){
+		var gpu = {};
+		ci = model._strip_coord[j];
+		if( ci >= 0 && model._coord != null && model._coord[ci] != null ){
+			gpu.position_buffer = _gl.createBuffer();
+			_GLShader.setArrayBuffer( gpu.position_buffer, model._coord[ci] );
+		}
+		ni = model._strip_normal[j];
+		if( ni >= 0 && model._normal != null && model._normal[ni] != null ){
+			gpu.normal_buffer = _gl.createBuffer();
+			_GLShader.setArrayBuffer( gpu.normal_buffer, model._normal[ni] );
+		}
+		coli = model._strip_color[j];
+		if( coli >= 0 && model._color != null && model._color[coli] != null ){
+			gpu.color_buffer = _gl.createBuffer();
+			_GLShader.setArrayBuffer( gpu.color_buffer, model._color[coli] );
+		}
+		mi = model._strip_map[j];
+		if( mi >= 0 && model._map != null && model._map[mi] != null ){
+			gpu.texture_coord_buffer = _gl.createBuffer();
+			_GLShader.setArrayBuffer( gpu.texture_coord_buffer, model._map[mi] );
+		}
+		gpu.index_buffer = _gl.createBuffer();
+		gpu.index_count = model._strip[j].length;
+		_GLShader.setIndexBuffer( gpu.index_buffer, model._strip[j] );
+		model._strip_gpu[j] = gpu;
+	}
+}
+function disposeGLModel( model ){
+	var j, gpu;
+	if( model == null ){
+		return;
+	}
+	if( model._strip_gpu != null ){
+		for( j = 0; j < model._strip_gpu.length; j++ ){
+			gpu = model._strip_gpu[j];
+			if( gpu == null ){
+				continue;
+			}
+			if( gpu.position_buffer ){
+				_gl.deleteBuffer( gpu.position_buffer );
+			}
+			if( gpu.normal_buffer ){
+				_gl.deleteBuffer( gpu.normal_buffer );
+			}
+			if( gpu.color_buffer ){
+				_gl.deleteBuffer( gpu.color_buffer );
+			}
+			if( gpu.texture_coord_buffer ){
+				_gl.deleteBuffer( gpu.texture_coord_buffer );
+			}
+			if( gpu.index_buffer ){
+				_gl.deleteBuffer( gpu.index_buffer );
+			}
+		}
+		model._strip_gpu = null;
 	}
 	_gl.deleteBuffer( model._position_buffer );
 	_gl.deleteBuffer( model._normal_buffer );
@@ -1112,33 +1239,54 @@ _GLSprite.prototype = {
 		var depth = this.depth();
 		if( tex_index >= 0 ){
 			glt.use( tex_index );
-			glt.setTransparency( tex_index, this.transparency() );
+			if( !_USE_GPUALPHA ){
+				glt.setTransparency( tex_index, this.transparency() );
+			}
 			alpha = glt.alpha( tex_index );
 		}
 		return (alpha && !depth);
 	},
+	prepareUv : function( glt , tex_index ){
+		if( this._uv_f ){
+			return;
+		}
+		glt.use( tex_index );
+		var width = glt.width( tex_index );
+		var height = glt.height( tex_index );
+		for( var i = 0; i < 4; i++ ){
+			this._uv[i * 2 ] = this._map[i * 2 ] / width;
+			this._uv[i * 2 + 1] = this._map[i * 2 + 1] / height;
+		}
+		this._uv_f = true;
+	},
+	uploadBuffers : function(){
+		_gl.bindBuffer( _gl.ARRAY_BUFFER, this._coord_buffer );
+		_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._coord ), _gl.STATIC_DRAW );
+		_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+		_gl.bindBuffer( _gl.ARRAY_BUFFER, this._uv_buffer );
+		_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._uv ), _gl.STATIC_DRAW );
+		_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
+		this._buffers_uploaded = true;
+	},
 	draw : function( glt , tex_index, alpha ){
 		var alpha2 = this.textureAlpha( glt, tex_index );
-		if( this.transparency() != 1.0 ){
+		var trans = _USE_GPUALPHA ? getGLDrawAlpha() : this.transparency();
+		if( trans < 1.0 ){
 			alpha2 = true;
 		}
 		if( alpha2 != alpha ){
 			return;
 		}
+		if( !this._buffers_uploaded ){
+			if( !this._uv_f ){
+				this.prepareUv( glt, tex_index );
+			}
+			this.uploadBuffers();
+		}
 		_gl.bindBuffer( _gl.ARRAY_BUFFER, this._coord_buffer );
-		_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._coord ), _gl.STATIC_DRAW );
 		glSpriteBindPositionBuffer( _gl, this._id );
 		_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
-		if( !this._uv_f ){
-			var width = glt.width( tex_index );
-			var height = glt.height( tex_index );
-			for( var i = 0; i < 4; i++ ){
-				this._uv[i * 2 ] = this._map[i * 2 ] / width;
-				this._uv[i * 2 + 1] = this._map[i * 2 + 1] / height;
-			}
-		}
 		_gl.bindBuffer( _gl.ARRAY_BUFFER, this._uv_buffer );
-		_gl.bufferData( _gl.ARRAY_BUFFER, new Float32Array( this._uv ), _gl.STATIC_DRAW );
 		glSpriteBindTextureCoordBuffer( _gl, this._id );
 		_gl.bindBuffer( _gl.ARRAY_BUFFER, null );
 		if( !glSpriteSetTexture( _gl, glt, tex_index, this._id ) ){
@@ -1426,7 +1574,7 @@ _GLTexture.prototype = {
 		if( this._index2id[index] >= 0 ){
 			return;
 		}
-		if( use_trans == undefined ){
+		if( _USE_GPUALPHA || (use_trans == undefined) ){
 			use_trans = false;
 		}
 		var i;
@@ -2574,6 +2722,7 @@ _GLUtility.prototype = {
 		return this.project_z;
 	}
 };
+window.getGLDrawAlpha = getGLDrawAlpha;
 window._GLDrawPrimitive = _GLDrawPrimitive;
 window._GLDraw = _GLDraw;
 window.canUseWebGL = canUseWebGL;
@@ -2587,6 +2736,7 @@ window.createShaderProgram = createShaderProgram;
 window._GLModel = _GLModel;
 window._GLModelData = _GLModelData;
 window.createGLModel = createGLModel;
+window.uploadGLModelBuffers = uploadGLModelBuffers;
 window.disposeGLModel = disposeGLModel;
 window._GLPrimitive = _GLPrimitive;
 window._GLShader = _GLShader;
