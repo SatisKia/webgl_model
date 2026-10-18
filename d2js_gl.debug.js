@@ -1470,6 +1470,9 @@ function _GLTexture( img_array, gen_num ){
 	this._ty = new Array( this._num );
 	this._apply_tx = new Array( this._num );
 	this._apply_ty = new Array( this._num );
+	this._shift_row = new Array( this._num );
+	this._shift_block = new Array( this._num );
+	this._pixel_canvas = new Array( this._num );
 	for( i = 0; i < this._num; i++ ){
 		this._index2id[i] = -1;
 		this._image_data[i] = null;
@@ -1479,6 +1482,9 @@ function _GLTexture( img_array, gen_num ){
 		this._ty[i] = 0.0;
 		this._apply_tx[i] = 0;
 		this._apply_ty[i] = 0;
+		this._shift_row[i] = null;
+		this._shift_block[i] = null;
+		this._pixel_canvas[i] = null;
 	}
 }
 _GLTexture.prototype = {
@@ -1508,12 +1514,7 @@ _GLTexture.prototype = {
 		context.drawImage( image, 0, 0 );
 		return context.getImageData( 0, 0, canvas.width, canvas.height );
 	},
-	imageDataFromPixels : function( pixels, width, height ){
-		var canvas = document.createElement( "canvas" );
-		var context = canvas.getContext( "2d" );
-		canvas.width = width;
-		canvas.height = height;
-		var imageData = context.getImageData( 0, 0, canvas.width, canvas.height );
+	_drawPixels : function( imageData, pixels, width, height ){
 		var data = imageData.data;
 		var x, y, yy, x4, y4;
 		var tmp;
@@ -1529,6 +1530,42 @@ _GLTexture.prototype = {
 				data[y4 + x4 + 3] = tmp & 0xff;
 			}
 		}
+	},
+	imageDataFromPixels : function( pixels, width, height ){
+		var canvas = document.createElement( "canvas" );
+		var context = canvas.getContext( "2d" );
+		canvas.width = width;
+		canvas.height = height;
+		var imageData = context.getImageData( 0, 0, canvas.width, canvas.height );
+		this._drawPixels( imageData, pixels, width, height );
+		return imageData;
+	},
+	_ensurePixelCanvas : function( index ){
+		var pixelCanvas = this._pixel_canvas[index];
+		var width = this._width[index];
+		var height = this._height[index];
+		if( (pixelCanvas == null) || (pixelCanvas.width != width) || (pixelCanvas.height != height) ){
+			var canvas = document.createElement( "canvas" );
+			var context = canvas.getContext( "2d" );
+			canvas.width = width;
+			canvas.height = height;
+			pixelCanvas = {
+				imageData : context.getImageData( 0, 0, width, height ),
+				width : width,
+				height : height
+			};
+			this._pixel_canvas[index] = pixelCanvas;
+		}
+		return pixelCanvas.imageData;
+	},
+	_imageDataFromPixels : function( index, pixels ){
+		if( pixels == undefined ){
+			pixels = this._t_rgba[index];
+		}
+		var width = this._width[index];
+		var height = this._height[index];
+		var imageData = this._ensurePixelCanvas( index );
+		this._drawPixels( imageData, pixels, width, height );
 		return imageData;
 	},
 	getTextureSize : function( size ){
@@ -1613,6 +1650,9 @@ _GLTexture.prototype = {
 			this._image_data[index] = null;
 			this._t_rgba[index] = null;
 			this._t_a[index] = null;
+			this._pixel_canvas[index] = null;
+			this._shift_row[index] = null;
+			this._shift_block[index] = null;
 			this._index2id[index] = -1;
 		}
 	},
@@ -1627,7 +1667,7 @@ _GLTexture.prototype = {
 		if( this._index2id[index] >= 0 ){
 			var len = this._width[index] * this._height[index];
 			if( length == len ){
-				this._image_data[index] = this.imageDataFromPixels( pixels, this._width[index], this._height[index] );
+				this._image_data[index] = this._imageDataFromPixels( index, pixels );
 				if( (this._t_rgba[index] != null) && (this._t_a[index] != null) ){
 					_System.arraycopy( pixels, 0, this._t_rgba[index], 0, len );
 					for( var i = 0; i < len; i++ ){
@@ -1662,13 +1702,275 @@ _GLTexture.prototype = {
 			a = _INT( this._t_a[index][i] * this._t_trans[index] );
 			this._t_rgba[index][i] = this._SHIFTL(r) + (g << 16) + (b << 8) + a;
 		}
-		this._image_data[index] = this.imageDataFromPixels( this._t_rgba[index], this._width[index], this._height[index] );
+		this._image_data[index] = this._imageDataFromPixels( index );
 		this._t_alpha[index] = (this._t_trans[index] == 1.0) ? glTextureAlphaFlag( index ) : true;
 		_gl.pixelStorei( _gl.UNPACK_ALIGNMENT, 1 );
 		_glu.bindTexture( this._id[this._index2id[index]] );
 		_gl.pixelStorei( _gl.UNPACK_FLIP_Y_WEBGL, glTextureFlipY( index ) );
 		_glu.texImage2D( this._image_data[index] );
 		this._setTexParameter( index );
+	},
+	_ensureShiftRow : function( index ){
+		var width = this._width[index];
+		var row = this._shift_row[index];
+		if( (row == null) || (row.width != width) ){
+			row = {
+				rgba0 : new Array( width ),
+				rgba1 : new Array( width ),
+				img : new Array( width * 4 ),
+				width : width
+			};
+			this._shift_row[index] = row;
+		}
+		return row;
+	},
+	_ensureShiftBlock : function( index ){
+		var width = this._width[index];
+		var height = this._height[index];
+		var size = width * height;
+		var block = this._shift_block[index];
+		if( (block == null) || (block.width != width) || (block.height != height) ){
+			block = {
+				rgba0 : new Array( size ),
+				rgba1 : new Array( size ),
+				img : new Array( size * 4 ),
+				width : width,
+				height : height
+			};
+			this._shift_block[index] = block;
+		}
+		return block;
+	},
+	_shiftHorizontalRgba : function( index, dx, repeat ){
+		var width = this._width[index];
+		var height = this._height[index];
+		var data0 = this._t_rgba[index];
+		var data1 = this._t_a[index];
+		var row = this._ensureShiftRow( index );
+		var tmp0 = row.rgba0;
+		var tmp1 = row.rgba1;
+		var i, pos, adx, right;
+		if( repeat ){
+			dx = _MOD( dx, width );
+			if( dx < 0 ){
+				dx += width;
+			}
+			if( dx == 0 ){
+				return;
+			}
+			right = width - dx;
+			for( i = 0; i < height; i++ ){
+				pos = i * width;
+				_System.arraycopy( data0, pos, tmp0, dx, right );
+				_System.arraycopy( data0, pos + right, tmp0, 0, dx );
+				_System.arraycopy( data1, pos, tmp1, dx, right );
+				_System.arraycopy( data1, pos + right, tmp1, 0, dx );
+				_System.arraycopy( tmp0, 0, data0, pos, width );
+				_System.arraycopy( tmp1, 0, data1, pos, width );
+			}
+			return;
+		}
+		if( (dx >= width) || (dx <= -width) ){
+			for( i = 0; i < height; i++ ){
+				pos = i * width;
+				for( var j = 0; j < width; j++ ){
+					data0[pos + j] = 0;
+					data1[pos + j] = 0;
+				}
+			}
+			return;
+		}
+		if( dx > 0 ){
+			for( i = 0; i < height; i++ ){
+				pos = i * width;
+				for( var j = 0; j < dx; j++ ){
+					tmp0[j] = 0;
+					tmp1[j] = 0;
+				}
+				_System.arraycopy( data0, pos, tmp0, dx, width - dx );
+				_System.arraycopy( data1, pos, tmp1, dx, width - dx );
+				_System.arraycopy( tmp0, 0, data0, pos, width );
+				_System.arraycopy( tmp1, 0, data1, pos, width );
+			}
+		} else {
+			adx = -dx;
+			for( i = 0; i < height; i++ ){
+				pos = i * width;
+				_System.arraycopy( data0, pos + adx, tmp0, 0, width - adx );
+				_System.arraycopy( data1, pos + adx, tmp1, 0, width - adx );
+				for( var j = width - adx; j < width; j++ ){
+					tmp0[j] = 0;
+					tmp1[j] = 0;
+				}
+				_System.arraycopy( tmp0, 0, data0, pos, width );
+				_System.arraycopy( tmp1, 0, data1, pos, width );
+			}
+		}
+	},
+	_shiftHorizontalImg : function( index, dx, repeat ){
+		var width = this._width[index];
+		var height = this._height[index];
+		var data = this._image_data[index].data;
+		var tmp = this._ensureShiftRow( index ).img;
+		var i, pos4, row4, adx, right, j, j4;
+		row4 = width * 4;
+		if( repeat ){
+			dx = _MOD( dx, width );
+			if( dx < 0 ){
+				dx += width;
+			}
+			if( dx == 0 ){
+				return;
+			}
+			right = (width - dx) * 4;
+			for( i = 0; i < height; i++ ){
+				pos4 = i * row4;
+				_System.arraycopy( data, pos4, tmp, dx * 4, right );
+				_System.arraycopy( data, pos4 + right, tmp, 0, dx * 4 );
+				_System.arraycopy( tmp, 0, data, pos4, row4 );
+			}
+			return;
+		}
+		if( (dx >= width) || (dx <= -width) ){
+			for( i = 0; i < height; i++ ){
+				pos4 = i * row4;
+				for( j = 0; j < row4; j++ ){
+					data[pos4 + j] = 0;
+				}
+			}
+			return;
+		}
+		if( dx > 0 ){
+			for( i = 0; i < height; i++ ){
+				pos4 = i * row4;
+				for( j = 0; j < dx; j++ ){
+					j4 = j * 4;
+					tmp[j4 ] = 0;
+					tmp[j4 + 1] = 0;
+					tmp[j4 + 2] = 0;
+					tmp[j4 + 3] = 0;
+				}
+				_System.arraycopy( data, pos4, tmp, dx * 4, (width - dx) * 4 );
+				_System.arraycopy( tmp, 0, data, pos4, row4 );
+			}
+		} else {
+			adx = -dx;
+			for( i = 0; i < height; i++ ){
+				pos4 = i * row4;
+				_System.arraycopy( data, pos4 + adx * 4, tmp, 0, (width - adx) * 4 );
+				for( j = width - adx; j < width; j++ ){
+					j4 = j * 4;
+					tmp[j4 ] = 0;
+					tmp[j4 + 1] = 0;
+					tmp[j4 + 2] = 0;
+					tmp[j4 + 3] = 0;
+				}
+				_System.arraycopy( tmp, 0, data, pos4, row4 );
+			}
+		}
+	},
+	_shiftVerticalRgba : function( index, dy, repeat ){
+		var width = this._width[index];
+		var height = this._height[index];
+		var data0 = this._t_rgba[index];
+		var data1 = this._t_a[index];
+		var block = this._ensureShiftBlock( index );
+		var block0 = block.rgba0;
+		var block1 = block.rgba1;
+		var i, k, dst, src;
+		if( repeat ){
+			dy = _MOD( dy, height );
+			if( dy < 0 ){
+				dy += height;
+			}
+			if( dy == 0 ){
+				return;
+			}
+		} else if( (dy >= height) || (dy <= -height) ){
+			for( i = 0; i < width * height; i++ ){
+				block0[i] = 0;
+				block1[i] = 0;
+			}
+			_System.arraycopy( block0, 0, data0, 0, width * height );
+			_System.arraycopy( block1, 0, data1, 0, width * height );
+			return;
+		}
+		for( i = 0; i < height; i++ ){
+			k = i - dy;
+			dst = i * width;
+			if( !repeat ){
+				if( (k < 0) || (k >= height) ){
+					for( var j = 0; j < width; j++ ){
+						block0[dst + j] = 0;
+						block1[dst + j] = 0;
+					}
+				} else {
+					src = k * width;
+					_System.arraycopy( data0, src, block0, dst, width );
+					_System.arraycopy( data1, src, block1, dst, width );
+				}
+			} else {
+				k = _MOD( k, height );
+				if( k < 0 ){
+					k += height;
+				}
+				src = k * width;
+				_System.arraycopy( data0, src, block0, dst, width );
+				_System.arraycopy( data1, src, block1, dst, width );
+			}
+		}
+		_System.arraycopy( block0, 0, data0, 0, width * height );
+		_System.arraycopy( block1, 0, data1, 0, width * height );
+	},
+	_shiftVerticalImg : function( index, dy, repeat ){
+		var width = this._width[index];
+		var height = this._height[index];
+		var data = this._image_data[index].data;
+		var block = this._ensureShiftBlock( index ).img;
+		var i, k, dst, src, row4, size4, j, j4;
+		row4 = width * 4;
+		size4 = row4 * height;
+		if( repeat ){
+			dy = _MOD( dy, height );
+			if( dy < 0 ){
+				dy += height;
+			}
+			if( dy == 0 ){
+				return;
+			}
+		} else if( (dy >= height) || (dy <= -height) ){
+			for( i = 0; i < size4; i++ ){
+				block[i] = 0;
+			}
+			_System.arraycopy( block, 0, data, 0, size4 );
+			return;
+		}
+		for( i = 0; i < height; i++ ){
+			k = i - dy;
+			dst = i * row4;
+			if( !repeat ){
+				if( (k < 0) || (k >= height) ){
+					for( j = 0; j < width; j++ ){
+						j4 = j * 4;
+						block[dst + j4 ] = 0;
+						block[dst + j4 + 1] = 0;
+						block[dst + j4 + 2] = 0;
+						block[dst + j4 + 3] = 0;
+					}
+				} else {
+					src = k * row4;
+					_System.arraycopy( data, src, block, dst, row4 );
+				}
+			} else {
+				k = _MOD( k, height );
+				if( k < 0 ){
+					k += height;
+				}
+				src = k * row4;
+				_System.arraycopy( data, src, block, dst, row4 );
+			}
+		}
+		_System.arraycopy( block, 0, data, 0, size4 );
 	},
 	translate : function( index, x, y ){
 		this.use( index );
@@ -1679,157 +1981,25 @@ _GLTexture.prototype = {
 		var dx = this._apply_tx[index] - _INT( this._tx[index] );
 		var dy = this._apply_ty[index] - _INT( this._ty[index] );
 		var repeat = (glTextureWrap( _gl, index ) == _gl.REPEAT);
-		var i, j, k;
 		if( dx != 0 ){
 			this._apply_tx[index] = _INT( this._tx[index] );
 			if( (this._t_rgba[index] != null) && (this._t_a[index] != null) ){
-				var tmp = new Array( 2 );
-				tmp[0] = new Array( width );
-				tmp[1] = new Array( width );
-				var data = new Array( 2 );
-				data[0] = this._t_rgba[index];
-				data[1] = this._t_a[index];
-				var pos;
-				for( i = 0; i < height; i++ ){
-					pos = i * width;
-					for( j = 0; j < width; j++ ){
-						k = j - dx;
-						if( !repeat ){
-							if( (k < 0) || (k >= width) ){
-								tmp[0][j] = 0;
-								tmp[1][j] = 0;
-							} else {
-								tmp[0][j] = data[0][pos + k];
-								tmp[1][j] = data[1][pos + k];
-							}
-						} else {
-							while( k < 0 ){
-								k += width;
-							}
-							while( k >= width ){
-								k -= width;
-							}
-							tmp[0][j] = data[0][pos + k];
-							tmp[1][j] = data[1][pos + k];
-						}
-					}
-					_System.arraycopy( tmp[0], 0, data[0], pos, width );
-					_System.arraycopy( tmp[1], 0, data[1], pos, width );
-				}
+				this._shiftHorizontalRgba( index, dx, repeat );
 			} else {
-				var tmp = new Array( width * 4 );
-				var data = this._image_data[index].data;
-				var pos;
-				for( i = 0; i < height; i++ ){
-					pos = i * width;
-					for( j = 0; j < width; j++ ){
-						k = j - dx;
-						if( !repeat ){
-							if( (k < 0) || (k >= width) ){
-								tmp[j * 4 ] = 0;
-								tmp[j * 4 + 1] = 0;
-								tmp[j * 4 + 2] = 0;
-								tmp[j * 4 + 3] = 0;
-							} else {
-								tmp[j * 4 ] = data[(pos + k) * 4 ];
-								tmp[j * 4 + 1] = data[(pos + k) * 4 + 1];
-								tmp[j * 4 + 2] = data[(pos + k) * 4 + 2];
-								tmp[j * 4 + 3] = data[(pos + k) * 4 + 3];
-							}
-						} else {
-							while( k < 0 ){
-								k += width;
-							}
-							while( k >= width ){
-								k -= width;
-							}
-							tmp[j * 4 ] = data[(pos + k) * 4 ];
-							tmp[j * 4 + 1] = data[(pos + k) * 4 + 1];
-							tmp[j * 4 + 2] = data[(pos + k) * 4 + 2];
-							tmp[j * 4 + 3] = data[(pos + k) * 4 + 3];
-						}
-					}
-					_System.arraycopy( tmp, 0, data, pos * 4, width * 4 );
-				}
+				this._shiftHorizontalImg( index, dx, repeat );
 			}
 		}
 		if( dy != 0 ){
 			this._apply_ty[index] = _INT( this._ty[index] );
 			if( (this._t_rgba[index] != null) && (this._t_a[index] != null) ){
-				var tmp = new Array( 2 );
-				tmp[0] = new Array( height );
-				tmp[1] = new Array( height );
-				for( i = 0; i < height; i++ ){
-					tmp[0][i] = new Array( width );
-					tmp[1][i] = new Array( width );
-				}
-				var data = new Array( 2 );
-				data[0] = this._t_rgba[index];
-				data[1] = this._t_a[index];
-				for( i = 0; i < height; i++ ){
-					k = i - dy;
-					if( !repeat ){
-						if( (k < 0) || (k >= width) ){
-							for( j = 0; j < width; j++ ){
-								tmp[0][i][j] = 0;
-								tmp[1][i][j] = 0;
-							}
-						} else {
-							_System.arraycopy( data[0], k * width, tmp[0][i], 0, width );
-							_System.arraycopy( data[1], k * width, tmp[1][i], 0, width );
-						}
-					} else {
-						while( k < 0 ){
-							k += height;
-						}
-						while( k >= height ){
-							k -= height;
-						}
-						_System.arraycopy( data[0], k * width, tmp[0][i], 0, width );
-						_System.arraycopy( data[1], k * width, tmp[1][i], 0, width );
-					}
-				}
-				for( i = 0; i < height; i++ ){
-					_System.arraycopy( tmp[0][i], 0, data[0], i * width, width );
-					_System.arraycopy( tmp[1][i], 0, data[1], i * width, width );
-				}
+				this._shiftVerticalRgba( index, dy, repeat );
 			} else {
-				var tmp = new Array( height );
-				for( i = 0; i < height; i++ ){
-					tmp[i] = new Array( width * 4 );
-				}
-				var data = this._image_data[index].data;
-				for( i = 0; i < height; i++ ){
-					k = i - dy;
-					if( !repeat ){
-						if( (k < 0) || (k >= width) ){
-							for( j = 0; j < width; j++ ){
-								tmp[i][j * 4 ] = 0;
-								tmp[i][j * 4 + 1] = 0;
-								tmp[i][j * 4 + 2] = 0;
-								tmp[i][j * 4 + 3] = 0;
-							}
-						} else {
-							_System.arraycopy( data, k * width * 4, tmp[i], 0, width * 4 );
-						}
-					} else {
-						while( k < 0 ){
-							k += height;
-						}
-						while( k >= height ){
-							k -= height;
-						}
-						_System.arraycopy( data, k * width * 4, tmp[i], 0, width * 4 );
-					}
-				}
-				for( i = 0; i < height; i++ ){
-					_System.arraycopy( tmp[i], 0, data, i * width * 4, width * 4 );
-				}
+				this._shiftVerticalImg( index, dy, repeat );
 			}
 		}
 		if( (dx != 0) || (dy != 0) ){
 			if( this._t_rgba[index] != null ){
-				this._image_data[index] = this.imageDataFromPixels( this._t_rgba[index], width, height );
+				this._image_data[index] = this._imageDataFromPixels( index );
 			}
 			_gl.pixelStorei( _gl.UNPACK_ALIGNMENT, 1 );
 			_glu.bindTexture( this._id[this._index2id[index]] );
